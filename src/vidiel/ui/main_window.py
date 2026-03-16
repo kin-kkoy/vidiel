@@ -488,7 +488,13 @@ class MainWindow(QMainWindow):
     def _build_request_from_form(self) -> DownloadRequest | None:
         return self._build_request_from_url(self.url_input.text().strip())
 
-    def _build_request_from_url(self, url: str) -> DownloadRequest | None:
+    def _build_request_from_url(
+        self,
+        url: str,
+        *,
+        download_type: DownloadType | None = None,
+        custom_name: str = "",
+    ) -> DownloadRequest | None:
         if not self.dependency_status.ok:
             QMessageBox.warning(self, "Missing Dependencies", install_guidance(self.dependency_status.missing))
             return None
@@ -512,13 +518,18 @@ class MainWindow(QMainWindow):
                 "aria2c is not installed on this system, so ViDieL will use the built-in downloader instead.",
             )
 
+        resolved_type = download_type or self.current_download_type()
+        quality = self.quality_combo.currentData()
+        if resolved_type != self.current_download_type():
+            quality = self._default_quality_for_type(resolved_type)
+
         return DownloadRequest(
             url=url,
-            download_type=self.current_download_type(),
-            quality=self.quality_combo.currentData(),
+            download_type=resolved_type,
+            quality=quality,
             output_dir=os.path.abspath(output_dir),
             use_cookies=self.cookies_checkbox.isChecked(),
-            custom_name=self.custom_name_input.text().strip(),
+            custom_name=custom_name or self.custom_name_input.text().strip(),
             concurrent_fragments=self.settings.concurrent_fragments,
             downloader_backend=backend,
             performance_mode=self.settings.performance_mode,
@@ -529,7 +540,18 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Import Format Reminder",
-            "Put one URL per line. Braces and dash bullets are fine.\n\nExample:\n{\n  - url\n  - url\n  - url\n}\n\nFuture polish still needed:\n- per-entry mp3/mp4 selection\n- per-entry custom file names",
+            "Supported import formats:\n\n"
+            "- url\n"
+            "- mp3 | url\n"
+            "- mp4 | url\n"
+            "- mp3 | custom name | url\n"
+            "- mp4 | custom name | url\n\n"
+            "Braces and dash bullets are fine.\n\n"
+            "Example:\n"
+            "{\n"
+            "  - mp3 | cello-cover | https://example.com/a\n"
+            "  - mp4 | https://example.com/b\n"
+            "}",
         )
 
         file_path, _ = QFileDialog.getOpenFileName(
@@ -550,19 +572,29 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Import Failed", f"Could not read file:\n{exc}")
             return
 
-        urls = self._extract_urls_from_text(content)
-        if not urls:
+        entries = self._parse_import_entries(content)
+        if not entries:
             QMessageBox.warning(
                 self,
                 "No URLs Found",
-                "No valid http/https links were found in that file.\n\nExpected shape:\n{\n  - url\n  - url\n}\n\nFuture polish still needed:\n- per-entry mp3/mp4 selection\n- per-entry custom file names",
+                "No valid import entries were found.\n\n"
+                "Supported formats:\n"
+                "- url\n"
+                "- mp3 | url\n"
+                "- mp4 | url\n"
+                "- mp3 | custom name | url\n"
+                "- mp4 | custom name | url",
             )
             return
 
         requests: list[DownloadRequest] = []
         invalid_count = 0
-        for url in urls:
-            request = self._build_request_from_url(url)
+        for entry in entries:
+            request = self._build_request_from_url(
+                entry["url"],
+                download_type=entry["download_type"],
+                custom_name=entry["custom_name"],
+            )
             if request:
                 requests.append(request)
             else:
@@ -602,6 +634,61 @@ class MainWindow(QMainWindow):
                 seen.add(cleaned)
                 urls.append(cleaned)
         return urls
+
+    @classmethod
+    def _parse_import_entries(cls, content: str) -> list[dict]:
+        entries: list[dict] = []
+        seen: set[tuple[str, str, str]] = set()
+
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line or line in {"{", "}"} or line.startswith("#"):
+                continue
+
+            line = re.sub(r"^[-*]\s*", "", line).strip()
+            url_match = cls.URL_PATTERN.search(line)
+            if not url_match:
+                continue
+
+            url = url_match.group(0).rstrip(".,)")
+            prefix = line[: url_match.start()].strip()
+            prefix = prefix.rstrip("|").strip()
+            parts = [part.strip() for part in prefix.split("|") if part.strip()] if prefix else []
+
+            download_type: DownloadType | None = None
+            custom_name = ""
+
+            if parts:
+                first = parts[0].lower()
+                if first in {"mp3", "audio"}:
+                    download_type = DownloadType.AUDIO
+                    parts = parts[1:]
+                elif first in {"mp4", "video"}:
+                    download_type = DownloadType.VIDEO
+                    parts = parts[1:]
+
+            if parts:
+                custom_name = parts[0]
+
+            key = (url, download_type.value if download_type else "current", custom_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append(
+                {
+                    "url": url,
+                    "download_type": download_type,
+                    "custom_name": custom_name,
+                }
+            )
+
+        return entries
+
+    @staticmethod
+    def _default_quality_for_type(download_type: DownloadType) -> str:
+        if download_type == DownloadType.AUDIO:
+            return AUDIO_QUALITY_OPTIONS[0].key
+        return VIDEO_QUALITY_OPTIONS[0].key
 
     def _launch_request(self, request: DownloadRequest) -> None:
         self.active_request = request
