@@ -44,6 +44,7 @@ from vidiel.models import (
     QueueItem,
 )
 from vidiel.settings import SettingsStore
+from vidiel.updater import YtDlpUpdateWorker, current_ytdlp_version, is_packaged_build
 
 
 class MainWindow(QMainWindow):
@@ -60,6 +61,8 @@ class MainWindow(QMainWindow):
 
         self.worker_thread: QThread | None = None
         self.worker: DownloadWorker | None = None
+        self.update_thread: QThread | None = None
+        self.update_worker: YtDlpUpdateWorker | None = None
         self.active_request: DownloadRequest | None = None
         self.pending_queue: deque[QueueItem] = deque()
         self.last_output_path = ""
@@ -233,16 +236,17 @@ class MainWindow(QMainWindow):
         sidebar = QWidget()
         layout = QVBoxLayout(sidebar)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(16)
+        layout.setSpacing(12)
         layout.addWidget(self._build_settings_group())
         layout.addWidget(self._build_history_group(), 1)
         return sidebar
 
     def _build_settings_group(self) -> QWidget:
         group = QGroupBox("Settings")
+        group.setObjectName("settingsGroup")
         form = QFormLayout(group)
-        form.setHorizontalSpacing(16)
-        form.setVerticalSpacing(12)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(8)
 
         self.default_folder_input = QLineEdit()
         self.default_folder_input.setPlaceholderText(str(Path.home() / "Downloads"))
@@ -259,9 +263,36 @@ class MainWindow(QMainWindow):
         self.cookies_checkbox = QCheckBox("Try browser cookies (Firefox)")
         form.addRow("Browser cookies", self.cookies_checkbox)
 
+        self.fragments_combo = QComboBox()
+        self.fragments_combo.addItem("1 (Lowest load)", 1)
+        self.fragments_combo.addItem("4 (Recommended)", 4)
+        self.fragments_combo.addItem("8 (Fastest)", 8)
+        form.addRow("Concurrent fragments", self.fragments_combo)
+
+        self.performance_combo = QComboBox()
+        self.performance_combo.addItem("Balanced", "balanced")
+        self.performance_combo.addItem("Low memory / background", "low_memory")
+        self.performance_combo.addItem("Max speed", "max_speed")
+        self.performance_combo.currentIndexChanged.connect(self._apply_performance_preset)
+        form.addRow("Performance mode", self.performance_combo)
+
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItem("Built-in downloader", "native")
+        self.backend_combo.addItem("aria2c if installed", "aria2c")
+        form.addRow("Download backend", self.backend_combo)
+
+        actions_row = QWidget()
+        actions_layout = QHBoxLayout(actions_row)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(8)
+        self.update_ytdlp_button = QPushButton("Update yt-dlp")
+        self.update_ytdlp_button.clicked.connect(self._start_ytdlp_update)
+        self.update_ytdlp_button.setToolTip("Upgrade yt-dlp inside this Python environment.")
         save_button = QPushButton("Save settings")
         save_button.clicked.connect(self._save_settings)
-        form.addRow("", save_button)
+        actions_layout.addWidget(self.update_ytdlp_button)
+        actions_layout.addWidget(save_button)
+        form.addRow("", actions_row)
         return group
 
     def _build_history_group(self) -> QWidget:
@@ -312,18 +343,64 @@ class MainWindow(QMainWindow):
         self.output_input.setText(self.settings.output_dir)
         self.default_folder_input.setText(self.settings.output_dir)
         self.cookies_checkbox.setChecked(self.settings.use_cookies)
+        self._refresh_backend_options()
+        fragments_index = self.fragments_combo.findData(self.settings.concurrent_fragments)
+        if fragments_index >= 0:
+            self.fragments_combo.setCurrentIndex(fragments_index)
+        performance_index = self.performance_combo.findData(self.settings.performance_mode)
+        if performance_index >= 0:
+            self.performance_combo.setCurrentIndex(performance_index)
+        backend_index = self.backend_combo.findData(self.settings.downloader_backend)
+        if backend_index >= 0:
+            self.backend_combo.setCurrentIndex(backend_index)
 
         self._refresh_quality_options()
 
     def _refresh_dependencies_banner(self) -> None:
         if self.dependency_status.ok:
-            self.dependency_banner.setText("Dependencies ready: yt-dlp, ffmpeg, and ffprobe are available.")
+            aria2c_note = " aria2c is available for speed mode." if self.dependency_status.aria2c else " aria2c is optional and not installed."
+            update_note = (
+                " Bundled builds currently require reinstalling ViDieL to refresh yt-dlp."
+                if is_packaged_build()
+                else f" yt-dlp version: {current_ytdlp_version()}."
+            )
+            self.dependency_banner.setText(
+                "Dependencies ready: yt-dlp, ffmpeg, and ffprobe are available." + aria2c_note + update_note
+            )
             self.dependency_banner.setProperty("state", "ok")
         else:
             self.dependency_banner.setText(install_guidance(self.dependency_status.missing))
             self.dependency_banner.setProperty("state", "error")
         self.dependency_banner.style().unpolish(self.dependency_banner)
         self.dependency_banner.style().polish(self.dependency_banner)
+        self._refresh_backend_options()
+        self._refresh_update_button()
+
+    def _refresh_backend_options(self) -> None:
+        if not hasattr(self, "backend_combo"):
+            return
+        current_value = self.backend_combo.currentData()
+        self.backend_combo.clear()
+        self.backend_combo.addItem("Built-in downloader", "native")
+        aria2c_label = "aria2c (Installed)" if self.dependency_status.aria2c else "aria2c (Not installed)"
+        self.backend_combo.addItem(aria2c_label, "aria2c")
+        index = self.backend_combo.findData(current_value)
+        if index >= 0:
+            self.backend_combo.setCurrentIndex(index)
+
+    def _refresh_update_button(self) -> None:
+        if not hasattr(self, "update_ytdlp_button"):
+            return
+        if is_packaged_build():
+            self.update_ytdlp_button.setEnabled(False)
+            self.update_ytdlp_button.setToolTip(
+                "Packaged builds cannot self-update yt-dlp yet. Rebuild or reinstall ViDieL to refresh bundled tools."
+            )
+        else:
+            self.update_ytdlp_button.setEnabled(True)
+            self.update_ytdlp_button.setToolTip(
+                f"Upgrade yt-dlp in this Python environment. Current version: {current_ytdlp_version()}."
+            )
 
     def _refresh_quality_options(self) -> None:
         current_type = self.current_download_type()
@@ -365,9 +442,65 @@ class MainWindow(QMainWindow):
     def _save_settings(self) -> None:
         self.settings.output_dir = self.default_folder_input.text().strip() or str(Path.home() / "Downloads")
         self.settings.use_cookies = self.cookies_checkbox.isChecked()
+        self.settings.concurrent_fragments = int(self.fragments_combo.currentData())
+        self.settings.performance_mode = str(self.performance_combo.currentData())
+        self.settings.downloader_backend = str(self.backend_combo.currentData())
         self.settings_store.save(self.settings)
         self.output_input.setText(self.settings.output_dir)
         self._append_log("Settings saved.")
+
+    def _start_ytdlp_update(self) -> None:
+        if self.update_thread:
+            return
+        if is_packaged_build():
+            QMessageBox.information(
+                self,
+                "Packaged Build",
+                "This packaged build cannot update its bundled yt-dlp yet.\n\nRebuild or reinstall ViDieL to refresh bundled tools.",
+            )
+            return
+
+        self.update_ytdlp_button.setEnabled(False)
+        self.update_thread = QThread(self)
+        self.update_worker = YtDlpUpdateWorker()
+        self.update_worker.moveToThread(self.update_thread)
+
+        self.update_thread.started.connect(self.update_worker.run)
+        self.update_worker.status_changed.connect(self._append_log)
+        self.update_worker.finished.connect(self._finish_ytdlp_update)
+        self.update_worker.finished.connect(self.update_thread.quit)
+        self.update_thread.finished.connect(self._cleanup_update_worker)
+        self.update_thread.start()
+
+    def _finish_ytdlp_update(self, ok: bool, message: str) -> None:
+        self._append_log(message)
+        self.dependency_status = check_dependencies()
+        self._refresh_dependencies_banner()
+        if ok:
+            QMessageBox.information(self, "yt-dlp Updated", message)
+        else:
+            QMessageBox.warning(self, "yt-dlp Update Failed", message)
+
+    def _cleanup_update_worker(self) -> None:
+        self.update_ytdlp_button.setEnabled(True)
+        if self.update_worker:
+            self.update_worker.deleteLater()
+        if self.update_thread:
+            self.update_thread.deleteLater()
+        self.update_worker = None
+        self.update_thread = None
+
+    def _apply_performance_preset(self) -> None:
+        mode = self.performance_combo.currentData()
+        if mode == "low_memory":
+            self.fragments_combo.setCurrentIndex(self.fragments_combo.findData(1))
+            self.backend_combo.setCurrentIndex(self.backend_combo.findData("native"))
+        elif mode == "max_speed":
+            self.fragments_combo.setCurrentIndex(self.fragments_combo.findData(8))
+        else:
+            self.fragments_combo.setCurrentIndex(self.fragments_combo.findData(4))
+            if self.backend_combo.currentData() not in {"native", "aria2c"}:
+                self.backend_combo.setCurrentIndex(self.backend_combo.findData("native"))
 
     def _handle_download_action(self) -> None:
         request = self._build_request_from_form()
@@ -383,7 +516,13 @@ class MainWindow(QMainWindow):
     def _build_request_from_form(self) -> DownloadRequest | None:
         return self._build_request_from_url(self.url_input.text().strip())
 
-    def _build_request_from_url(self, url: str) -> DownloadRequest | None:
+    def _build_request_from_url(
+        self,
+        url: str,
+        *,
+        download_type: DownloadType | None = None,
+        custom_name: str = "",
+    ) -> DownloadRequest | None:
         if not self.dependency_status.ok:
             QMessageBox.warning(self, "Missing Dependencies", install_guidance(self.dependency_status.missing))
             return None
@@ -397,20 +536,48 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Invalid Folder", "Choose an existing output folder.")
             return None
 
+        backend = self.settings.downloader_backend
+        if backend == "aria2c" and not self.dependency_status.aria2c:
+            backend = "native"
+            self._append_log("aria2c is not installed. Falling back to the built-in downloader.")
+            QMessageBox.warning(
+                self,
+                "aria2c Not Installed",
+                "aria2c is not installed on this system, so ViDieL will use the built-in downloader instead.",
+            )
+
+        resolved_type = download_type or self.current_download_type()
+        quality = self.quality_combo.currentData()
+        if resolved_type != self.current_download_type():
+            quality = self._default_quality_for_type(resolved_type)
+
         return DownloadRequest(
             url=url,
-            download_type=self.current_download_type(),
-            quality=self.quality_combo.currentData(),
+            download_type=resolved_type,
+            quality=quality,
             output_dir=os.path.abspath(output_dir),
             use_cookies=self.cookies_checkbox.isChecked(),
-            custom_name=self.custom_name_input.text().strip(),
+            custom_name=custom_name or self.custom_name_input.text().strip(),
+            concurrent_fragments=self.settings.concurrent_fragments,
+            downloader_backend=backend,
+            performance_mode=self.settings.performance_mode,
+            downloader_path=self.dependency_status.aria2c if backend == "aria2c" else "",
         )
 
     def _import_url_list(self) -> None:
         QMessageBox.information(
             self,
-            "Import Format Reminder",
-            "Put one URL per line. Braces and dash bullets are fine.\n\nExample:\n{\n  - url\n  - url\n  - url\n}\n\nFuture polish still needed:\n- per-entry mp3/mp4 selection\n- per-entry custom file names",
+            "Import Reminders",
+            "Quick reminders before importing:\n\n"
+            "- Plain URL lines use the current form settings.\n"
+            "- You can force a type with `mp3 | url` or `mp4 | url`.\n"
+            "- You can add a custom output name with `mp3 | custom name | url`.\n"
+            "- Braces, dash bullets, and comment lines starting with `#` are ignored.\n\n"
+            "Example reminder:\n"
+            "{\n"
+            "  - mp3 | cello-cover | https://example.com/a\n"
+            "  - https://example.com/b\n"
+            "}",
         )
 
         file_path, _ = QFileDialog.getOpenFileName(
@@ -431,19 +598,29 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Import Failed", f"Could not read file:\n{exc}")
             return
 
-        urls = self._extract_urls_from_text(content)
-        if not urls:
+        entries = self._parse_import_entries(content)
+        if not entries:
             QMessageBox.warning(
                 self,
                 "No URLs Found",
-                "No valid http/https links were found in that file.\n\nExpected shape:\n{\n  - url\n  - url\n}\n\nFuture polish still needed:\n- per-entry mp3/mp4 selection\n- per-entry custom file names",
+                "No valid import entries were found.\n\n"
+                "Supported formats:\n"
+                "- url\n"
+                "- mp3 | url\n"
+                "- mp4 | url\n"
+                "- mp3 | custom name | url\n"
+                "- mp4 | custom name | url",
             )
             return
 
         requests: list[DownloadRequest] = []
         invalid_count = 0
-        for url in urls:
-            request = self._build_request_from_url(url)
+        for entry in entries:
+            request = self._build_request_from_url(
+                entry["url"],
+                download_type=entry["download_type"],
+                custom_name=entry["custom_name"],
+            )
             if request:
                 requests.append(request)
             else:
@@ -483,6 +660,61 @@ class MainWindow(QMainWindow):
                 seen.add(cleaned)
                 urls.append(cleaned)
         return urls
+
+    @classmethod
+    def _parse_import_entries(cls, content: str) -> list[dict]:
+        entries: list[dict] = []
+        seen: set[tuple[str, str, str]] = set()
+
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line or line in {"{", "}"} or line.startswith("#"):
+                continue
+
+            line = re.sub(r"^[-*]\s*", "", line).strip()
+            url_match = cls.URL_PATTERN.search(line)
+            if not url_match:
+                continue
+
+            url = url_match.group(0).rstrip(".,)")
+            prefix = line[: url_match.start()].strip()
+            prefix = prefix.rstrip("|").strip()
+            parts = [part.strip() for part in prefix.split("|") if part.strip()] if prefix else []
+
+            download_type: DownloadType | None = None
+            custom_name = ""
+
+            if parts:
+                first = parts[0].lower()
+                if first in {"mp3", "audio"}:
+                    download_type = DownloadType.AUDIO
+                    parts = parts[1:]
+                elif first in {"mp4", "video"}:
+                    download_type = DownloadType.VIDEO
+                    parts = parts[1:]
+
+            if parts:
+                custom_name = parts[0]
+
+            key = (url, download_type.value if download_type else "current", custom_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append(
+                {
+                    "url": url,
+                    "download_type": download_type,
+                    "custom_name": custom_name,
+                }
+            )
+
+        return entries
+
+    @staticmethod
+    def _default_quality_for_type(download_type: DownloadType) -> str:
+        if download_type == DownloadType.AUDIO:
+            return AUDIO_QUALITY_OPTIONS[0].key
+        return VIDEO_QUALITY_OPTIONS[0].key
 
     def _launch_request(self, request: DownloadRequest) -> None:
         self.active_request = request
@@ -1069,6 +1301,9 @@ def build_stylesheet() -> str:
             margin-top: 8px;
             padding: 18px;
             font-weight: 600;
+        }
+        QGroupBox#settingsGroup {
+            padding: 14px;
         }
         QGroupBox::title {
             subcontrol-origin: margin;

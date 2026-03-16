@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import importlib.metadata
 import shutil
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(slots=True)
@@ -9,6 +12,7 @@ class DependencyStatus:
     yt_dlp: str | None
     ffmpeg: str | None
     ffprobe: str | None
+    aria2c: str | None
 
     @property
     def missing(self) -> list[str]:
@@ -26,11 +30,48 @@ class DependencyStatus:
         return not self.missing
 
 
+def _bundled_binary(name: str) -> str | None:
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.extend(
+            [
+                exe_dir / name,
+                exe_dir / "bin" / name,
+                Path(getattr(sys, "_MEIPASS", exe_dir)) / name,
+                Path(getattr(sys, "_MEIPASS", exe_dir)) / "bin" / name,
+            ]
+        )
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def find_tool(name: str) -> str | None:
+    return _bundled_binary(name) or shutil.which(name)
+
+
+def detect_yt_dlp() -> str | None:
+    bundled = _bundled_binary("yt-dlp")
+    if bundled:
+        return bundled
+    cli_path = shutil.which("yt-dlp")
+    if cli_path:
+        return cli_path
+    try:
+        return importlib.metadata.version("yt-dlp")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
 def check_dependencies() -> DependencyStatus:
     return DependencyStatus(
-        yt_dlp=shutil.which("yt-dlp"),
-        ffmpeg=shutil.which("ffmpeg"),
-        ffprobe=shutil.which("ffprobe"),
+        yt_dlp=detect_yt_dlp(),
+        ffmpeg=find_tool("ffmpeg"),
+        ffprobe=find_tool("ffprobe"),
+        aria2c=find_tool("aria2c"),
     )
 
 
