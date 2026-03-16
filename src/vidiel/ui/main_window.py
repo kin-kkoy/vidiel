@@ -44,7 +44,7 @@ from vidiel.models import (
     QueueItem,
 )
 from vidiel.settings import SettingsStore
-from vidiel.updater import YtDlpUpdateWorker
+from vidiel.updater import YtDlpUpdateWorker, current_ytdlp_version, is_packaged_build
 
 
 class MainWindow(QMainWindow):
@@ -287,6 +287,7 @@ class MainWindow(QMainWindow):
         actions_layout.setSpacing(8)
         self.update_ytdlp_button = QPushButton("Update yt-dlp")
         self.update_ytdlp_button.clicked.connect(self._start_ytdlp_update)
+        self.update_ytdlp_button.setToolTip("Upgrade yt-dlp inside this Python environment.")
         save_button = QPushButton("Save settings")
         save_button.clicked.connect(self._save_settings)
         actions_layout.addWidget(self.update_ytdlp_button)
@@ -358,8 +359,13 @@ class MainWindow(QMainWindow):
     def _refresh_dependencies_banner(self) -> None:
         if self.dependency_status.ok:
             aria2c_note = " aria2c is available for speed mode." if self.dependency_status.aria2c else " aria2c is optional and not installed."
+            update_note = (
+                " Bundled builds currently require reinstalling ViDieL to refresh yt-dlp."
+                if is_packaged_build()
+                else f" yt-dlp version: {current_ytdlp_version()}."
+            )
             self.dependency_banner.setText(
-                "Dependencies ready: yt-dlp, ffmpeg, and ffprobe are available." + aria2c_note
+                "Dependencies ready: yt-dlp, ffmpeg, and ffprobe are available." + aria2c_note + update_note
             )
             self.dependency_banner.setProperty("state", "ok")
         else:
@@ -368,6 +374,7 @@ class MainWindow(QMainWindow):
         self.dependency_banner.style().unpolish(self.dependency_banner)
         self.dependency_banner.style().polish(self.dependency_banner)
         self._refresh_backend_options()
+        self._refresh_update_button()
 
     def _refresh_backend_options(self) -> None:
         if not hasattr(self, "backend_combo"):
@@ -380,6 +387,20 @@ class MainWindow(QMainWindow):
         index = self.backend_combo.findData(current_value)
         if index >= 0:
             self.backend_combo.setCurrentIndex(index)
+
+    def _refresh_update_button(self) -> None:
+        if not hasattr(self, "update_ytdlp_button"):
+            return
+        if is_packaged_build():
+            self.update_ytdlp_button.setEnabled(False)
+            self.update_ytdlp_button.setToolTip(
+                "Packaged builds cannot self-update yt-dlp yet. Rebuild or reinstall ViDieL to refresh bundled tools."
+            )
+        else:
+            self.update_ytdlp_button.setEnabled(True)
+            self.update_ytdlp_button.setToolTip(
+                f"Upgrade yt-dlp in this Python environment. Current version: {current_ytdlp_version()}."
+            )
 
     def _refresh_quality_options(self) -> None:
         current_type = self.current_download_type()
@@ -430,6 +451,13 @@ class MainWindow(QMainWindow):
 
     def _start_ytdlp_update(self) -> None:
         if self.update_thread:
+            return
+        if is_packaged_build():
+            QMessageBox.information(
+                self,
+                "Packaged Build",
+                "This packaged build cannot update its bundled yt-dlp yet.\n\nRebuild or reinstall ViDieL to refresh bundled tools.",
+            )
             return
 
         self.update_ytdlp_button.setEnabled(False)

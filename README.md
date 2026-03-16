@@ -98,7 +98,10 @@ The app now includes an `Update yt-dlp` button in Settings for normal Python/ven
 python -m pip install --upgrade yt-dlp
 ```
 
-For a future fully packaged release, the updater path should be hardened further so bundled runtime updates are handled more explicitly.
+Packaged builds currently do not self-update their bundled `yt-dlp`. For now, the packaged release path is:
+
+- rebuild the app bundle when you want a newer bundled `yt-dlp`
+- or keep using the editable/venv install if you want in-app `yt-dlp` upgrades
 
 For Windows later:
 

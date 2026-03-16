@@ -1,9 +1,21 @@
 from __future__ import annotations
 
+import importlib.metadata
 import subprocess
 import sys
 
 from PySide6.QtCore import QObject, Signal
+
+
+def is_packaged_build() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def current_ytdlp_version() -> str:
+    try:
+        return importlib.metadata.version("yt-dlp")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
 
 
 class YtDlpUpdateWorker(QObject):
@@ -11,6 +23,13 @@ class YtDlpUpdateWorker(QObject):
     finished = Signal(bool, str)
 
     def run(self) -> None:
+        if is_packaged_build():
+            self.finished.emit(
+                False,
+                "This packaged build cannot update its bundled yt-dlp yet. Rebuild or reinstall ViDieL to refresh bundled tools.",
+            )
+            return
+
         self.status_changed.emit("Updating yt-dlp...")
         cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"]
 

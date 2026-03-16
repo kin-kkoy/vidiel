@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata
 import shutil
 import sys
 from dataclasses import dataclass
@@ -52,9 +53,22 @@ def find_tool(name: str) -> str | None:
     return _bundled_binary(name) or shutil.which(name)
 
 
+def detect_yt_dlp() -> str | None:
+    bundled = _bundled_binary("yt-dlp")
+    if bundled:
+        return bundled
+    cli_path = shutil.which("yt-dlp")
+    if cli_path:
+        return cli_path
+    try:
+        return importlib.metadata.version("yt-dlp")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
 def check_dependencies() -> DependencyStatus:
     return DependencyStatus(
-        yt_dlp=find_tool("yt-dlp"),
+        yt_dlp=detect_yt_dlp(),
         ffmpeg=find_tool("ffmpeg"),
         ffprobe=find_tool("ffprobe"),
         aria2c=find_tool("aria2c"),
