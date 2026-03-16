@@ -539,18 +539,16 @@ class MainWindow(QMainWindow):
     def _import_url_list(self) -> None:
         QMessageBox.information(
             self,
-            "Import Format Reminder",
-            "Supported import formats:\n\n"
-            "- url\n"
-            "- mp3 | url\n"
-            "- mp4 | url\n"
-            "- mp3 | custom name | url\n"
-            "- mp4 | custom name | url\n\n"
-            "Braces and dash bullets are fine.\n\n"
-            "Example:\n"
+            "Import Reminders",
+            "Quick reminders before importing:\n\n"
+            "- Plain URL lines use the current form settings.\n"
+            "- You can force a type with `mp3 | url` or `mp4 | url`.\n"
+            "- You can add a custom output name with `mp3 | custom name | url`.\n"
+            "- Braces, dash bullets, and comment lines starting with `#` are ignored.\n\n"
+            "Example reminder:\n"
             "{\n"
             "  - mp3 | cello-cover | https://example.com/a\n"
-            "  - mp4 | https://example.com/b\n"
+            "  - https://example.com/b\n"
             "}",
         )
 
