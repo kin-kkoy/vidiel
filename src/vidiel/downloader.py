@@ -43,7 +43,7 @@ def build_command_preview(request: DownloadRequest) -> str:
     if request.concurrent_fragments > 1:
         args.extend(["-N", str(request.concurrent_fragments)])
     if request.downloader_backend == "aria2c":
-        args.extend(["--downloader", "aria2c"])
+        args.extend(["--downloader", request.downloader_path or "aria2c"])
     args.extend(["-P", request.output_dir, "-o", _output_template(request)])
     return shlex.join(args)
 
@@ -118,7 +118,7 @@ class DownloadWorker(QObject):
         }
 
         if request.downloader_backend == "aria2c":
-            options["external_downloader"] = "aria2c"
+            options["external_downloader"] = request.downloader_path or "aria2c"
             options["external_downloader_args"] = {
                 "default": [
                     "--max-connection-per-server=8",

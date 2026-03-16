@@ -41,6 +41,7 @@ class DownloadRequest:
     concurrent_fragments: int = 1
     downloader_backend: str = "native"
     performance_mode: str = "balanced"
+    downloader_path: str = ""
 
 
 @dataclass(slots=True)

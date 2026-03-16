@@ -76,6 +76,29 @@ For Linux packaging later, the practical path is:
 - `PyInstaller` for a single-folder build
 - or `briefcase` if you want a more app-like packaging workflow later
 - keep `ffmpeg` external for Linux first instead of bundling it
+- bundle `aria2c` when present so speed mode works in packaged builds
+
+Current packaging helper:
+
+```bash
+./packaging/package_linux.sh
+```
+
+This script:
+
+- installs `PyInstaller` into the project venv
+- builds a Linux desktop app bundle
+- includes `aria2c` in the package if it is installed on the system
+
+## yt-dlp updates
+
+The app now includes an `Update yt-dlp` button in Settings for normal Python/venv installs. It runs:
+
+```bash
+python -m pip install --upgrade yt-dlp
+```
+
+For a future fully packaged release, the updater path should be hardened further so bundled runtime updates are handled more explicitly.
 
 For Windows later:
 

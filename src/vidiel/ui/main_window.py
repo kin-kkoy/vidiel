@@ -44,6 +44,7 @@ from vidiel.models import (
     QueueItem,
 )
 from vidiel.settings import SettingsStore
+from vidiel.updater import YtDlpUpdateWorker
 
 
 class MainWindow(QMainWindow):
@@ -60,6 +61,8 @@ class MainWindow(QMainWindow):
 
         self.worker_thread: QThread | None = None
         self.worker: DownloadWorker | None = None
+        self.update_thread: QThread | None = None
+        self.update_worker: YtDlpUpdateWorker | None = None
         self.active_request: DownloadRequest | None = None
         self.pending_queue: deque[QueueItem] = deque()
         self.last_output_path = ""
@@ -278,14 +281,17 @@ class MainWindow(QMainWindow):
         self.backend_combo.addItem("aria2c if installed", "aria2c")
         form.addRow("Download backend", self.backend_combo)
 
+        actions_row = QWidget()
+        actions_layout = QHBoxLayout(actions_row)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(8)
+        self.update_ytdlp_button = QPushButton("Update yt-dlp")
+        self.update_ytdlp_button.clicked.connect(self._start_ytdlp_update)
         save_button = QPushButton("Save settings")
         save_button.clicked.connect(self._save_settings)
-        save_row = QWidget()
-        save_layout = QHBoxLayout(save_row)
-        save_layout.setContentsMargins(0, 0, 0, 0)
-        save_layout.addStretch(1)
-        save_layout.addWidget(save_button)
-        form.addRow("", save_row)
+        actions_layout.addWidget(self.update_ytdlp_button)
+        actions_layout.addWidget(save_button)
+        form.addRow("", actions_row)
         return group
 
     def _build_history_group(self) -> QWidget:
@@ -336,6 +342,7 @@ class MainWindow(QMainWindow):
         self.output_input.setText(self.settings.output_dir)
         self.default_folder_input.setText(self.settings.output_dir)
         self.cookies_checkbox.setChecked(self.settings.use_cookies)
+        self._refresh_backend_options()
         fragments_index = self.fragments_combo.findData(self.settings.concurrent_fragments)
         if fragments_index >= 0:
             self.fragments_combo.setCurrentIndex(fragments_index)
@@ -360,6 +367,19 @@ class MainWindow(QMainWindow):
             self.dependency_banner.setProperty("state", "error")
         self.dependency_banner.style().unpolish(self.dependency_banner)
         self.dependency_banner.style().polish(self.dependency_banner)
+        self._refresh_backend_options()
+
+    def _refresh_backend_options(self) -> None:
+        if not hasattr(self, "backend_combo"):
+            return
+        current_value = self.backend_combo.currentData()
+        self.backend_combo.clear()
+        self.backend_combo.addItem("Built-in downloader", "native")
+        aria2c_label = "aria2c (Installed)" if self.dependency_status.aria2c else "aria2c (Not installed)"
+        self.backend_combo.addItem(aria2c_label, "aria2c")
+        index = self.backend_combo.findData(current_value)
+        if index >= 0:
+            self.backend_combo.setCurrentIndex(index)
 
     def _refresh_quality_options(self) -> None:
         current_type = self.current_download_type()
@@ -408,6 +428,40 @@ class MainWindow(QMainWindow):
         self.output_input.setText(self.settings.output_dir)
         self._append_log("Settings saved.")
 
+    def _start_ytdlp_update(self) -> None:
+        if self.update_thread:
+            return
+
+        self.update_ytdlp_button.setEnabled(False)
+        self.update_thread = QThread(self)
+        self.update_worker = YtDlpUpdateWorker()
+        self.update_worker.moveToThread(self.update_thread)
+
+        self.update_thread.started.connect(self.update_worker.run)
+        self.update_worker.status_changed.connect(self._append_log)
+        self.update_worker.finished.connect(self._finish_ytdlp_update)
+        self.update_worker.finished.connect(self.update_thread.quit)
+        self.update_thread.finished.connect(self._cleanup_update_worker)
+        self.update_thread.start()
+
+    def _finish_ytdlp_update(self, ok: bool, message: str) -> None:
+        self._append_log(message)
+        self.dependency_status = check_dependencies()
+        self._refresh_dependencies_banner()
+        if ok:
+            QMessageBox.information(self, "yt-dlp Updated", message)
+        else:
+            QMessageBox.warning(self, "yt-dlp Update Failed", message)
+
+    def _cleanup_update_worker(self) -> None:
+        self.update_ytdlp_button.setEnabled(True)
+        if self.update_worker:
+            self.update_worker.deleteLater()
+        if self.update_thread:
+            self.update_thread.deleteLater()
+        self.update_worker = None
+        self.update_thread = None
+
     def _apply_performance_preset(self) -> None:
         mode = self.performance_combo.currentData()
         if mode == "low_memory":
@@ -452,6 +506,11 @@ class MainWindow(QMainWindow):
         if backend == "aria2c" and not self.dependency_status.aria2c:
             backend = "native"
             self._append_log("aria2c is not installed. Falling back to the built-in downloader.")
+            QMessageBox.warning(
+                self,
+                "aria2c Not Installed",
+                "aria2c is not installed on this system, so ViDieL will use the built-in downloader instead.",
+            )
 
         return DownloadRequest(
             url=url,
@@ -463,6 +522,7 @@ class MainWindow(QMainWindow):
             concurrent_fragments=self.settings.concurrent_fragments,
             downloader_backend=backend,
             performance_mode=self.settings.performance_mode,
+            downloader_path=self.dependency_status.aria2c if backend == "aria2c" else "",
         )
 
     def _import_url_list(self) -> None:
