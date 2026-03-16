@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import time
 from pathlib import Path
 
 import yt_dlp
@@ -39,6 +40,10 @@ def build_command_preview(request: DownloadRequest) -> str:
             args.extend(["-f", f"bv*[height<={request.quality}]+ba/b[height<={request.quality}]"])
     if request.use_cookies:
         args.extend(["--cookies-from-browser", "firefox"])
+    if request.concurrent_fragments > 1:
+        args.extend(["-N", str(request.concurrent_fragments)])
+    if request.downloader_backend == "aria2c":
+        args.extend(["--downloader", "aria2c"])
     args.extend(["-P", request.output_dir, "-o", _output_template(request)])
     return shlex.join(args)
 
@@ -65,6 +70,15 @@ class DownloadWorker(QObject):
         self._cancel_requested = False
         self._final_path = ""
         self._title = ""
+        self._last_progress_emit = 0.0
+        self._last_status_emit = 0.0
+
+    def _ui_emit_interval(self) -> float:
+        if self.request.performance_mode == "low_memory":
+            return 0.9
+        if self.request.performance_mode == "max_speed":
+            return 0.2
+        return 0.45
 
     def cancel(self) -> None:
         self._cancel_requested = True
@@ -100,7 +114,21 @@ class DownloadWorker(QObject):
             "quiet": True,
             "no_warnings": True,
             "restrictfilenames": False,
+            "concurrent_fragment_downloads": request.concurrent_fragments,
         }
+
+        if request.downloader_backend == "aria2c":
+            options["external_downloader"] = "aria2c"
+            options["external_downloader_args"] = {
+                "default": [
+                    "--max-connection-per-server=8",
+                    "--split=8",
+                    "--min-split-size=1M",
+                    "--summary-interval=0",
+                    "--download-result=hide",
+                    "--console-log-level=warn",
+                ]
+            }
 
         if request.download_type == DownloadType.AUDIO:
             options["format"] = "bestaudio/best"
@@ -131,9 +159,13 @@ class DownloadWorker(QObject):
 
         status = data.get("status")
         if status == "downloading":
+            now = time.monotonic()
             progress = self._extract_percent(data)
-            if progress is not None:
+            if progress is not None and (
+                now - self._last_progress_emit >= self._ui_emit_interval() or progress >= 100
+            ):
                 self.progress_changed.emit(progress)
+                self._last_progress_emit = now
 
             filename = data.get("filename")
             if filename:
@@ -148,7 +180,9 @@ class DownloadWorker(QObject):
             percent = f"{progress}%" if progress is not None else _clean_terminal_text(data.get("_percent_str", "").strip())
 
             details = [part for part in [percent, speed, f"ETA {eta}" if eta else ""] if part]
-            self.status_changed.emit("Downloading " + " | ".join(details))
+            if now - self._last_status_emit >= self._ui_emit_interval():
+                self.status_changed.emit("Downloading " + " | ".join(details))
+                self._last_status_emit = now
 
         elif status == "finished":
             filename = data.get("filename")

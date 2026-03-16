@@ -9,6 +9,7 @@ class DependencyStatus:
     yt_dlp: str | None
     ffmpeg: str | None
     ffprobe: str | None
+    aria2c: str | None
 
     @property
     def missing(self) -> list[str]:
@@ -31,6 +32,7 @@ def check_dependencies() -> DependencyStatus:
         yt_dlp=shutil.which("yt-dlp"),
         ffmpeg=shutil.which("ffmpeg"),
         ffprobe=shutil.which("ffprobe"),
+        aria2c=shutil.which("aria2c"),
     )
 
 

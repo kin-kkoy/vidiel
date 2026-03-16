@@ -38,6 +38,9 @@ class DownloadRequest:
     output_dir: str
     use_cookies: bool
     custom_name: str = ""
+    concurrent_fragments: int = 1
+    downloader_backend: str = "native"
+    performance_mode: str = "balanced"
 
 
 @dataclass(slots=True)
@@ -59,4 +62,7 @@ class DownloadRecord:
 class AppSettings:
     output_dir: str = ""
     use_cookies: bool = False
+    concurrent_fragments: int = 4
+    downloader_backend: str = "native"
+    performance_mode: str = "balanced"
     history: list[DownloadRecord] = field(default_factory=list)

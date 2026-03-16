@@ -233,16 +233,17 @@ class MainWindow(QMainWindow):
         sidebar = QWidget()
         layout = QVBoxLayout(sidebar)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(16)
+        layout.setSpacing(12)
         layout.addWidget(self._build_settings_group())
         layout.addWidget(self._build_history_group(), 1)
         return sidebar
 
     def _build_settings_group(self) -> QWidget:
         group = QGroupBox("Settings")
+        group.setObjectName("settingsGroup")
         form = QFormLayout(group)
-        form.setHorizontalSpacing(16)
-        form.setVerticalSpacing(12)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(8)
 
         self.default_folder_input = QLineEdit()
         self.default_folder_input.setPlaceholderText(str(Path.home() / "Downloads"))
@@ -259,9 +260,32 @@ class MainWindow(QMainWindow):
         self.cookies_checkbox = QCheckBox("Try browser cookies (Firefox)")
         form.addRow("Browser cookies", self.cookies_checkbox)
 
+        self.fragments_combo = QComboBox()
+        self.fragments_combo.addItem("1 (Lowest load)", 1)
+        self.fragments_combo.addItem("4 (Recommended)", 4)
+        self.fragments_combo.addItem("8 (Fastest)", 8)
+        form.addRow("Concurrent fragments", self.fragments_combo)
+
+        self.performance_combo = QComboBox()
+        self.performance_combo.addItem("Balanced", "balanced")
+        self.performance_combo.addItem("Low memory / background", "low_memory")
+        self.performance_combo.addItem("Max speed", "max_speed")
+        self.performance_combo.currentIndexChanged.connect(self._apply_performance_preset)
+        form.addRow("Performance mode", self.performance_combo)
+
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItem("Built-in downloader", "native")
+        self.backend_combo.addItem("aria2c if installed", "aria2c")
+        form.addRow("Download backend", self.backend_combo)
+
         save_button = QPushButton("Save settings")
         save_button.clicked.connect(self._save_settings)
-        form.addRow("", save_button)
+        save_row = QWidget()
+        save_layout = QHBoxLayout(save_row)
+        save_layout.setContentsMargins(0, 0, 0, 0)
+        save_layout.addStretch(1)
+        save_layout.addWidget(save_button)
+        form.addRow("", save_row)
         return group
 
     def _build_history_group(self) -> QWidget:
@@ -312,12 +336,24 @@ class MainWindow(QMainWindow):
         self.output_input.setText(self.settings.output_dir)
         self.default_folder_input.setText(self.settings.output_dir)
         self.cookies_checkbox.setChecked(self.settings.use_cookies)
+        fragments_index = self.fragments_combo.findData(self.settings.concurrent_fragments)
+        if fragments_index >= 0:
+            self.fragments_combo.setCurrentIndex(fragments_index)
+        performance_index = self.performance_combo.findData(self.settings.performance_mode)
+        if performance_index >= 0:
+            self.performance_combo.setCurrentIndex(performance_index)
+        backend_index = self.backend_combo.findData(self.settings.downloader_backend)
+        if backend_index >= 0:
+            self.backend_combo.setCurrentIndex(backend_index)
 
         self._refresh_quality_options()
 
     def _refresh_dependencies_banner(self) -> None:
         if self.dependency_status.ok:
-            self.dependency_banner.setText("Dependencies ready: yt-dlp, ffmpeg, and ffprobe are available.")
+            aria2c_note = " aria2c is available for speed mode." if self.dependency_status.aria2c else " aria2c is optional and not installed."
+            self.dependency_banner.setText(
+                "Dependencies ready: yt-dlp, ffmpeg, and ffprobe are available." + aria2c_note
+            )
             self.dependency_banner.setProperty("state", "ok")
         else:
             self.dependency_banner.setText(install_guidance(self.dependency_status.missing))
@@ -365,9 +401,24 @@ class MainWindow(QMainWindow):
     def _save_settings(self) -> None:
         self.settings.output_dir = self.default_folder_input.text().strip() or str(Path.home() / "Downloads")
         self.settings.use_cookies = self.cookies_checkbox.isChecked()
+        self.settings.concurrent_fragments = int(self.fragments_combo.currentData())
+        self.settings.performance_mode = str(self.performance_combo.currentData())
+        self.settings.downloader_backend = str(self.backend_combo.currentData())
         self.settings_store.save(self.settings)
         self.output_input.setText(self.settings.output_dir)
         self._append_log("Settings saved.")
+
+    def _apply_performance_preset(self) -> None:
+        mode = self.performance_combo.currentData()
+        if mode == "low_memory":
+            self.fragments_combo.setCurrentIndex(self.fragments_combo.findData(1))
+            self.backend_combo.setCurrentIndex(self.backend_combo.findData("native"))
+        elif mode == "max_speed":
+            self.fragments_combo.setCurrentIndex(self.fragments_combo.findData(8))
+        else:
+            self.fragments_combo.setCurrentIndex(self.fragments_combo.findData(4))
+            if self.backend_combo.currentData() not in {"native", "aria2c"}:
+                self.backend_combo.setCurrentIndex(self.backend_combo.findData("native"))
 
     def _handle_download_action(self) -> None:
         request = self._build_request_from_form()
@@ -397,6 +448,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Invalid Folder", "Choose an existing output folder.")
             return None
 
+        backend = self.settings.downloader_backend
+        if backend == "aria2c" and not self.dependency_status.aria2c:
+            backend = "native"
+            self._append_log("aria2c is not installed. Falling back to the built-in downloader.")
+
         return DownloadRequest(
             url=url,
             download_type=self.current_download_type(),
@@ -404,6 +460,9 @@ class MainWindow(QMainWindow):
             output_dir=os.path.abspath(output_dir),
             use_cookies=self.cookies_checkbox.isChecked(),
             custom_name=self.custom_name_input.text().strip(),
+            concurrent_fragments=self.settings.concurrent_fragments,
+            downloader_backend=backend,
+            performance_mode=self.settings.performance_mode,
         )
 
     def _import_url_list(self) -> None:
@@ -1069,6 +1128,9 @@ def build_stylesheet() -> str:
             margin-top: 8px;
             padding: 18px;
             font-weight: 600;
+        }
+        QGroupBox#settingsGroup {
+            padding: 14px;
         }
         QGroupBox::title {
             subcontrol-origin: margin;

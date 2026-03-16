@@ -38,6 +38,9 @@ class SettingsStore:
         return AppSettings(
             output_dir=raw.get("output_dir") or str(Path.home() / "Downloads"),
             use_cookies=bool(raw.get("use_cookies", False)),
+            concurrent_fragments=max(1, int(raw.get("concurrent_fragments", 4))),
+            downloader_backend=raw.get("downloader_backend", "native"),
+            performance_mode=raw.get("performance_mode", "balanced"),
             history=history,
         )
 
