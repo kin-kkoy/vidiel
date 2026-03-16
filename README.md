@@ -113,6 +113,26 @@ Packaged builds currently do not self-update their bundled `yt-dlp`. For now, th
 - rebuild the app bundle when you want a newer bundled `yt-dlp`
 - or keep using the editable/venv install if you want in-app `yt-dlp` upgrades
 
+If you already built `dist/ViDieL/ViDieL` and want proper dock/app-menu behavior on Linux, install the desktop launcher:
+
+```bash
+./packaging/install_linux_launcher.sh
+```
+
+This creates:
+
+```text
+~/.local/share/applications/vidiel.desktop
+```
+
+After that, search for `ViDieL` in your app menu and pin that launcher to the dock instead of dragging the binary directly.
+
+This is the lowest-friction Linux path for everyday use:
+
+- build the packaged app once
+- install the launcher once
+- then launch `ViDieL` from the app menu or dock like a normal desktop app
+
 For Windows later:
 
 - keep the same Python service modules
